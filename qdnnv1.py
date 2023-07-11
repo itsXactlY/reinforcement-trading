@@ -7,14 +7,19 @@ import time
 import random
 import tensorflow as tf
 
-api_key = ''
-secret_key = ''
+api_key = '0d83efdc-960b-409a-a2c8-edb88d603840'
+secret_key = '18rKRP3l2JCIFZ_VQIga7LOqEcSnDkgtbFSKI32pw9U2NzQ2MWUzNC1mODc1LTQ4NDEtYWEyMS1jNTc1YjkxNjIzZWE'
 
 sandbox = ccxt.phemex({
     'enableRateLimit': True,
     'timeout': 30000,
     'apiKey' : api_key,
     'secret' : secret_key
+    # 'apiKey': 'fed3d251-e4a4-49d1-8c88-94998c380ebb',
+    # 'secret': 'X-Fpzy-UcHVwxgqPaL0it_NhHXMSTPdMZgA67l_b7wQ5YmJkMDI1MC00ODJmLTRlMTktOTIxZS0xYTlhMTU4YTBlOTI'
+    # aLca - Subaccount API
+    # 'apiKey': '2c758246-57df-447f-ac26-2e5b876675de',
+    # 'secret': 'UxF7CUmAS2sxNwrlMp0sPjjrLz8iJ_8hMBqpd5esmaowOWUwZjkwYS0xZDJjLTQ0YmUtOTU0NS04Mzg2ZTc2M2M4MGY'
 })
 sandbox.set_sandbox_mode(True)
 sandbox.verbose = False  # uncomment for debugging purposes if necessary
@@ -165,7 +170,7 @@ class MarketMakingStrategy:
 
         sandbox.load_markets()
         market_info = sandbox.market(symbol)
-        min_trade_amount = market_info['limits']['amount']['min']
+        min_trade_amount = 1 #market_info['limits']['amount']['min']
 
         # symbol_info = [s for s in sandbox.markets.values() if s['symbol'] == symbol]
         # min_notional = float([f['minNotional'] for f in symbol_info['info']['filters'] if f['filterType'] == 'MIN_NOTIONAL'][0])
@@ -175,8 +180,13 @@ class MarketMakingStrategy:
 
         if action == 0:  # Buy
             usdt_balance = self.df.total.sum()# sandbox.fetch_balance(collateral_symbol)
+            price = asks[0][0] * (1 - transaction_fee)
+            if price:  
+                amount = max(max_risk / price, min_trade_amount)
+            else:
+                amount = 1
+            print(price)
             if usdt_balance >= min_notional:
-                price = asks[0][0] * (1 - transaction_fee)
                 amount = max(max_risk / price, min_trade_amount)
                 amount = max(amount, max(min_notional * buffer / price, min_usd_amount * buffer / price))
                 amount = round(amount, 5)  # Round amount after updating
@@ -196,6 +206,11 @@ class MarketMakingStrategy:
             btc_balance = self.df.total.sum() #self.get_balance(collateral_symbol)
             if btc_balance * bids[0][0] >= min_notional:
                 price = bids[0][0] * (1 + transaction_fee)
+                print(price)
+                if price:
+                    amount = max(max_risk / price, min_trade_amount)
+                else:
+                    amount = 1
                 amount = max(max_risk / price, min_trade_amount)
                 amount = max(amount, max(min_notional * buffer / price, min_usd_amount * buffer / price))
                 amount = round(amount, 5)  # Round amount after updating
