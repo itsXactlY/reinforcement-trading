@@ -1,4 +1,6 @@
+from pprint import pprint
 import ccxt
+import pandas as pd
 import numpy as np
 import threading
 import time
@@ -8,18 +10,43 @@ import tensorflow as tf
 api_key = ''
 secret_key = ''
 
-binance = ccxt.binance({
-    'apiKey': api_key,
-    'secret': secret_key,
+sandbox = ccxt.phemex({
+    'enableRateLimit': True,
+    'timeout': 30000,
+    'apiKey' : api_key,
+    'secret' : secret_key
 })
+sandbox.set_sandbox_mode(True)
+sandbox.verbose = False  # uncomment for debugging purposes if necessary
 
-symbol = 'SOL/BUSD'
+
+symbol = 'BTCUSD'
+collateral_symbol = "BTC"
 timeframe = '1m'
 transaction_fee = 0.001
 max_risk = 0.05
 
+params = {'timeInforce': 'PostOnly'} # openai told me it was wrong before, lol
+
+parameter = {'type':'swap', 'code':'BTC'}
+
+def getprice(exchange, curr: str) -> float:
+    """ 
+    Takes 'BTC' and returns the ticker price for 'BTC/USDT', if 'USDT' is passed in it
+    returns 1.0. In this example pass the phemex exchange object in
+    """
+    if curr == 'USDT':
+        return 1.0
+    else:
+        tick = exchange.fetchTicker(curr+'/USDT')
+        mid_point = tick['bid']
+
+    return mid_point
+
 class MarketMakingStrategy:
     def __init__(self, num_states, num_actions, alpha, gamma, epsilon, model):
+        self.sandbox = sandbox
+        self.starting_balance = self.get_total_balance(self.sandbox)
         self.num_states = num_states
         self.num_actions = num_actions
         self.alpha = alpha
@@ -38,7 +65,7 @@ class MarketMakingStrategy:
 
     def update_total_balance(self):
         while True:
-            self.total_balance = self.get_total_balance()
+            self.total_balance = self.df.balance.sum()#self.get_total_balance()
             print("Total balance is: ", self.total_balance)
             time.sleep(10)
 
@@ -47,18 +74,49 @@ class MarketMakingStrategy:
         balance_updater_thread.daemon = True
         balance_updater_thread.start()
 
-    def get_total_balance(self, base_currency='USDT'):
-        balances = binance.fetch_balance()
+
+
+    def get_phemex_balances():
+        phemexBalance = sandbox.fetch_balance(params=parameter)
+        # print(phemexBalance['total'])
+        # print()
+        # print(phemexBalance['free'])
+        
+        balances = []
+        for symbol, value in phemexBalance['total'].items():
+            if value > 0.0:
+                # get the bid price from the ticker price
+                bid_price = getprice(sandbox, symbol)
+                # load a list of dictionary entries for easy dataframe creation
+                datum = {}
+                datum['asset'] = symbol
+                datum['free'] = value
+                datum['locked'] = 0.0
+                datum['total'] = value
+                datum['price'] = bid_price 
+                datum['balance'] = round(bid_price * datum['total'],2)
+                datum['platform'] = 'Phemex'
+                balances.append(datum)
+        
+        df = pd.DataFrame(balances)
+        # print(df)
+        return df
+   
+    df = get_phemex_balances()
+    # print(f'Phemex Balance: {df.balance.sum():,.2f}')
+
+    def get_total_balance(self, base_currency=collateral_symbol):
+        response = sandbox.fetch_balance(params=parameter)
+        balances = response['info']['data']
         total_balance = 0
         
-        # Fetch all ticker prices in a single API call
-        tickers = binance.fetch_tickers()
+        tickers = sandbox.fetch_balance(params=parameter)   
         available_symbols = set(tickers.keys())
-
-        for balance in balances['info']['balances']:
-            asset = balance['asset']
-            free_balance = float(balance['free'])
-            locked_balance = float(balance['locked'])
+            
+        for balance in balances:
+            asset = self.df.balance.sum()
+            free_balance = self.df.free.sum()
+            locked_balance = self.df.locked.sum()
             total_asset_balance = free_balance + locked_balance
 
             if asset == base_currency:
@@ -70,7 +128,7 @@ class MarketMakingStrategy:
                         asset_price = tickers[ticker]['last']
                         total_balance += total_asset_balance * asset_price
                 except ccxt.BaseError as e:
-                    print(f"Error fetching ticker for {ticker}: {e}")
+                    print(f"Error fetching ticker for {ticker}: {e}")   
         return total_balance
 
     def get_state(self, data):
@@ -94,29 +152,29 @@ class MarketMakingStrategy:
         
         self.model.fit(state[np.newaxis], target_q_values, epochs=1, verbose=0)
 
-    def get_balance(self, currency):
-        balances = binance.fetch_balance()
+    def get_balance(self, currency):  
+        balances = sandbox.fetch_balance()  
         for balance in balances['info']['balances']:
             if balance['asset'] == currency:
-                return float(balance['free'])
+                return float(balance['free'])  
         return 0
 
     def execute_action(self, action):
-        order_book = binance.fetch_order_book(symbol)
+        order_book = sandbox.fetch_order_book(symbol)
         bids, asks = order_book['bids'], order_book['asks']
 
-        binance.load_markets()
-        market_info = binance.market(symbol)
+        sandbox.load_markets()
+        market_info = sandbox.market(symbol)
         min_trade_amount = market_info['limits']['amount']['min']
 
-        symbol_info = [s for s in binance.markets.values() if s['symbol'] == symbol][0]
-        min_notional = float([f['minNotional'] for f in symbol_info['info']['filters'] if f['filterType'] == 'MIN_NOTIONAL'][0])
-
+        # symbol_info = [s for s in sandbox.markets.values() if s['symbol'] == symbol]
+        # min_notional = float([f['minNotional'] for f in symbol_info['info']['filters'] if f['filterType'] == 'MIN_NOTIONAL'][0])
+        min_notional = 1
         min_usd_amount = 6
         buffer = 1.05  # 1% buffer
 
         if action == 0:  # Buy
-            usdt_balance = self.get_balance('BUSD')
+            usdt_balance = self.df.total.sum()# sandbox.fetch_balance(collateral_symbol)
             if usdt_balance >= min_notional:
                 price = asks[0][0] * (1 - transaction_fee)
                 amount = max(max_risk / price, min_trade_amount)
@@ -129,13 +187,13 @@ class MarketMakingStrategy:
                 print("Minimum notional:", min_notional)
 
                 try:
-                    order = binance.create_limit_buy_order(symbol, amount, price)
+                    order = sandbox.create_limit_buy_order(symbol, amount, price)
                     self.placed_orders.append((time.time(), order))
                 except Exception as e:
                     print("Error creating buy order:", e)
 
         elif action == 1:  # Sell
-            btc_balance = self.get_balance('SOL')
+            btc_balance = self.df.total.sum() #self.get_balance(collateral_symbol)
             if btc_balance * bids[0][0] >= min_notional:
                 price = bids[0][0] * (1 + transaction_fee)
                 amount = max(max_risk / price, min_trade_amount)
@@ -148,7 +206,7 @@ class MarketMakingStrategy:
                 print("Minimum notional:", min_notional)
 
                 try:
-                    order = binance.create_limit_sell_order(symbol, amount, price)
+                    order = sandbox.create_limit_sell_order(symbol, amount, price)
                     self.placed_orders.append((time.time(), order))
                 except Exception as e:
                     print("Error creating sell order:", e)
@@ -163,7 +221,7 @@ class MarketMakingStrategy:
         for i, (order_time, order) in enumerate(self.placed_orders):
             if current_time - order_time > max_age_seconds:
                 try:
-                    binance.cancel_order(order['id'], symbol)
+                    sandbox.cancel_order(order['id'], symbol)
                     print(f"Order {order['id']} canceled.")
                     orders_to_remove.append(i)
                 except ccxt.OrderNotFound as e:
@@ -179,16 +237,16 @@ class MarketMakingStrategy:
         updated_orders = []
         for _, order in self.placed_orders:
             try:
-                order_info = binance.fetch_order(order['id'], symbol)
+                order_info = sandbox.fetch_order(order['id'], symbol)
                 updated_orders.append((_, order_info))
             except Exception as e:
                 print(f"Error fetching order {order['id']} status:", e)
         self.placed_orders = updated_orders
 
     def get_reward(self, action):
-        starting_balance = self.starting_balance
+        starting_balance = self.df.balance.sum() #self.get_total_balance()
         self.execute_action(action)
-        time.sleep(5)
+        time.sleep(1)
         new_balance = self.total_balance
 
         reward = new_balance - starting_balance
@@ -200,7 +258,7 @@ class MarketMakingStrategy:
 
         for i, (_, order) in enumerate(self.placed_orders):
             try:
-                updated_order = binance.fetch_order(order['id'], symbol)
+                updated_order = sandbox.fetch_order(order['id'], symbol)
                 if updated_order['status'] == 'closed' or updated_order['status'] == 'canceled':
                     orders_to_remove.append(i)
             except Exception as e:
@@ -210,9 +268,10 @@ class MarketMakingStrategy:
             del self.placed_orders[index]
 
     def run(self):
+        self.starting_balance = self.get_total_balance()
         self.start_balance_updater()
         while True:
-            data = (binance.fetch_order_book(symbol), binance.fetch_ohlcv(symbol, timeframe)[-1])
+            data = (sandbox.fetch_order_book(symbol), sandbox.fetch_ohlcv(symbol, timeframe)[-1])
             print("data")
             state = self.get_state(data)
             print("state")
@@ -222,7 +281,7 @@ class MarketMakingStrategy:
             reward = self.get_reward(action)
             self.update_order_statuses_and_remove_filled()
             print("reward")
-            next_data = (binance.fetch_order_book(symbol), binance.fetch_ohlcv(symbol, timeframe)[-1])
+            next_data = (sandbox.fetch_order_book(symbol), sandbox.fetch_ohlcv(symbol, timeframe)[-1])
             print("next_data")
             next_state = self.get_state(next_data)
             print("next_state")
