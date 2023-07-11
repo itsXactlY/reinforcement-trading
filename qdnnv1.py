@@ -7,19 +7,14 @@ import time
 import random
 import tensorflow as tf
 
-api_key = '0d83efdc-960b-409a-a2c8-edb88d603840'
-secret_key = '18rKRP3l2JCIFZ_VQIga7LOqEcSnDkgtbFSKI32pw9U2NzQ2MWUzNC1mODc1LTQ4NDEtYWEyMS1jNTc1YjkxNjIzZWE'
+api_key = ''
+secret_key = ''
 
 sandbox = ccxt.phemex({
     'enableRateLimit': True,
     'timeout': 30000,
     'apiKey' : api_key,
     'secret' : secret_key
-    # 'apiKey': 'fed3d251-e4a4-49d1-8c88-94998c380ebb',
-    # 'secret': 'X-Fpzy-UcHVwxgqPaL0it_NhHXMSTPdMZgA67l_b7wQ5YmJkMDI1MC00ODJmLTRlMTktOTIxZS0xYTlhMTU4YTBlOTI'
-    # aLca - Subaccount API
-    # 'apiKey': '2c758246-57df-447f-ac26-2e5b876675de',
-    # 'secret': 'UxF7CUmAS2sxNwrlMp0sPjjrLz8iJ_8hMBqpd5esmaowOWUwZjkwYS0xZDJjLTQ0YmUtOTU0NS04Mzg2ZTc2M2M4MGY'
 })
 sandbox.set_sandbox_mode(True)
 sandbox.verbose = False  # uncomment for debugging purposes if necessary
@@ -30,8 +25,6 @@ collateral_symbol = "BTC"
 timeframe = '1m'
 transaction_fee = 0.001
 max_risk = 0.05
-
-params = {'timeInforce': 'PostOnly'} # openai told me it was wrong before, lol
 
 parameter = {'type':'swap', 'code':'BTC'}
 
@@ -80,12 +73,8 @@ class MarketMakingStrategy:
         balance_updater_thread.start()
 
 
-
-    def get_phemex_balances():
+    def get_phemex_balances(self):
         phemexBalance = sandbox.fetch_balance(params=parameter)
-        # print(phemexBalance['total'])
-        # print()
-        # print(phemexBalance['free'])
         
         balances = []
         for symbol, value in phemexBalance['total'].items():
@@ -107,7 +96,7 @@ class MarketMakingStrategy:
         # print(df)
         return df
    
-    df = get_phemex_balances()
+    df = get_phemex_balances(symbol)
     # print(f'Phemex Balance: {df.balance.sum():,.2f}')
 
     def get_total_balance(self, base_currency=collateral_symbol):
@@ -117,7 +106,7 @@ class MarketMakingStrategy:
         
         tickers = sandbox.fetch_balance(params=parameter)   
         available_symbols = set(tickers.keys())
-            
+
         for balance in balances:
             asset = self.df.balance.sum()
             free_balance = self.df.free.sum()
@@ -169,17 +158,14 @@ class MarketMakingStrategy:
         bids, asks = order_book['bids'], order_book['asks']
 
         sandbox.load_markets()
-        market_info = sandbox.market(symbol)
-        min_trade_amount = 1 #market_info['limits']['amount']['min']
+        min_trade_amount = 1
 
-        # symbol_info = [s for s in sandbox.markets.values() if s['symbol'] == symbol]
-        # min_notional = float([f['minNotional'] for f in symbol_info['info']['filters'] if f['filterType'] == 'MIN_NOTIONAL'][0])
         min_notional = 1
         min_usd_amount = 6
         buffer = 1.05  # 1% buffer
 
         if action == 0:  # Buy
-            usdt_balance = self.df.total.sum()# sandbox.fetch_balance(collateral_symbol)
+            usdt_balance = self.df.total.sum()
             price = asks[0][0] * (1 - transaction_fee)
             if price:  
                 amount = max(max_risk / price, min_trade_amount)
@@ -197,13 +183,14 @@ class MarketMakingStrategy:
                 print("Minimum notional:", min_notional)
 
                 try:
-                    order = sandbox.create_limit_buy_order(symbol, amount, price)
+                    order = sandbox.create_limit_buy_order(symbol, amount, price, params=parameter)
                     self.placed_orders.append((time.time(), order))
+                    print(order['id'])
                 except Exception as e:
                     print("Error creating buy order:", e)
 
         elif action == 1:  # Sell
-            btc_balance = self.df.total.sum() #self.get_balance(collateral_symbol)
+            btc_balance = self.get_phemex_balances()['total'].sum()
             if btc_balance * bids[0][0] >= min_notional:
                 price = bids[0][0] * (1 + transaction_fee)
                 print(price)
@@ -221,47 +208,92 @@ class MarketMakingStrategy:
                 print("Minimum notional:", min_notional)
 
                 try:
-                    order = sandbox.create_limit_sell_order(symbol, amount, price)
+                    order = sandbox.create_limit_sell_order(symbol, amount, price, params=parameter)
+                    print(order)
                     self.placed_orders.append((time.time(), order))
                 except Exception as e:
                     print("Error creating sell order:", e)
 
         else:  # Hold
             pass
+        
+    def cancelorder(self, order):
+        # symbol = order['symbol']
+        
+        print(f"Attempting to cancel order {order['id']}")
+
+        # Fetch open orders to get latest data
+        open_orders = sandbox.fetch_open_orders(symbol, params=parameter)
+
+        # Try to cancel order
+        try:
+            sandbox.cancel_order(order['id'], symbol)
+            # sandbox.cancel_all_orders(symbol)
+        except ccxt.OrderNotFound:
+            print(f"Order {order['id']} not found when trying to cancel")
+        except ccxt.NetworkError as e:
+            print(f"Error canceling order due to network: {e}")
+        except ccxt.ExchangeError as e:
+            print(f"Error canceling order: {e}")
+
+        print(f"Order {order['id']} canceled")
+
+        # Update internal order tracking
+        for open_order in open_orders:
+            if open_order['id'] == order['id']:
+                # Order still exists, cancel failed
+                print(f"Order {order['id']} failed to cancel, still open")
+            return 
+        print(f"Order {order['id']} removed from tracking")
+
+        # Add short delay to avoid race conditions
+        time.sleep(1)
+
 
     def cancel_old_orders(self, max_age_seconds=180):
         current_time = time.time()
         orders_to_remove = []
 
-        for i, (order_time, order) in enumerate(self.placed_orders):
-            if current_time - order_time > max_age_seconds:
-                try:
-                    sandbox.cancel_order(order['id'], symbol)
-                    print(f"Order {order['id']} canceled.")
+        for i, (_, order) in enumerate(self.placed_orders):
+            try:
+                updated_order = sandbox.fetch_order(order['id'], symbol, params=parameter)
+                print(updated_order)
+                
+                if updated_order['status'] == 'closed':
+                    print(f"Order {order['id']} is already filled or canceled")
                     orders_to_remove.append(i)
-                except ccxt.OrderNotFound as e:
-                    print(f"Order {order['id']} not found or already canceled/filled.")
-                    orders_to_remove.append(i)
-                except Exception as e:
-                    print(f"Error canceling order {order['id']}:", e)
+                else:
+                    if updated_order['status'] != order['status']:
+                        # Order status has changed, update the order in self.placed_orders
+                        self.placed_orders[i] = (time.time(), updated_order)
+                
+            except ccxt.OrderNotFound:
+                print(f"Order {order['id']} not found, likely filled or canceled already")
+                orders_to_remove.append(i)
+            except ccxt.NetworkError as e:
+                print(f"Error updating order status: {e}")
 
         for index in sorted(orders_to_remove, reverse=True):
             del self.placed_orders[index]
 
     def update_order_statuses(self):
         updated_orders = []
-        for _, order in self.placed_orders:
+        
+        open_orders = sandbox.fetch_open_orders(symbol)
+        for order in open_orders:
             try:
                 order_info = sandbox.fetch_order(order['id'], symbol)
-                updated_orders.append((_, order_info))
-            except Exception as e:
-                print(f"Error fetching order {order['id']} status:", e)
+                print(order_info)
+                updated_orders.append((order_info))
+            except ccxt.errors.OrderNotFound:
+                continue
+            
         self.placed_orders = updated_orders
 
     def get_reward(self, action):
-        starting_balance = self.df.balance.sum() #self.get_total_balance()
+        starting_balance = self.df.balance.sum()
         self.execute_action(action)
-        time.sleep(1)
+        time.sleep(5)
         new_balance = self.total_balance
 
         reward = new_balance - starting_balance
@@ -271,16 +303,33 @@ class MarketMakingStrategy:
     def update_order_statuses_and_remove_filled(self):
         orders_to_remove = []
 
+        print(f"Updating order statuses for {len(self.placed_orders)} orders")
+        
         for i, (_, order) in enumerate(self.placed_orders):
             try:
-                updated_order = sandbox.fetch_order(order['id'], symbol)
-                if updated_order['status'] == 'closed' or updated_order['status'] == 'canceled':
+                updated_order = sandbox.fetch_order(order['id'], symbol, params=parameter)
+                # exchange.cancel_order(order['id'], symbol)
+                print(updated_order)
+                
+                if updated_order['status'] != 'closed':
                     orders_to_remove.append(i)
-            except Exception as e:
-                print(f"Error fetching order {order['id']} status:", e)
-
+                
+            except ccxt.OrderNotFound:
+                print(f"Order {order['id']} not found, likely filled or canceled already")
+                orders_to_remove.append(i)
+                
+            except ccxt.NetworkError as e:
+                print(f"Error updating order status: {e}")
+            
+        print(f"Removing {len(orders_to_remove)} orders")
+        
         for index in sorted(orders_to_remove, reverse=True):
-            del self.placed_orders[index]
+            try:
+                del self.placed_orders[index]  
+            except IndexError:
+                print(f"Error removing order from tracking")
+            
+        print(f"{len(self.placed_orders)} orders left after update")
 
     def run(self):
         self.starting_balance = self.get_total_balance()
