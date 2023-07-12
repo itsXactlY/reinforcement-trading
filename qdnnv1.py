@@ -13,15 +13,14 @@ secret_key = ''
 sandbox = ccxt.phemex({
     'enableRateLimit': True,
     'timeout': 30000,
-    'apiKey' : api_key,
-    'secret' : secret_key,
+    'apiKey': api_key,
+    'secret': secret_key,
     'options': {
         'defaultType': 'swap',
     },
 })
 sandbox.set_sandbox_mode(True)
 sandbox.verbose = False  # uncomment for debugging purposes if necessary
-
 
 symbol = 'BTCUSD'
 full_symbol = 'BTC/USD:BTC'
@@ -30,22 +29,20 @@ timeframe = '1m'
 transaction_fee = 0.001
 max_risk = 0.05
 
-parameter = {'type':'swap', 'code':'BTC'}
+parameter = {'type': 'swap', 'code': 'BTC'}
+
 
 def getprice(exchange, curr: str) -> float:
-    """ 
-    Takes 'BTC' and returns the ticker price for 'BTC/USDT', if 'USDT' is passed in it
-    returns 1.0. In this example pass the phemex exchange object in
-    """
     if curr == 'USDT':
         return 1.0
     else:
         tick = exchange.fetchTicker(curr+'/USDT')
         mid_point = tick['bid']
+        return mid_point
 
-    return mid_point
 
 class MarketMakingStrategy:
+
     def __init__(self, num_states, num_actions, alpha, gamma, epsilon, model):
         self.sandbox = sandbox
         self.starting_balance = self.get_total_balance(self.sandbox)
@@ -56,14 +53,13 @@ class MarketMakingStrategy:
         self.total_balance = 0
         self.epsilon = epsilon
         self.epsilon_min = 0.01
-        self.epsilon_decay = 0.995       
+        self.epsilon_decay = 0.995
         self.model = model
         self.placed_orders = []
         self.starting_balance = self.get_total_balance()
 
     def update_epsilon(self):
         self.epsilon = max(self.epsilon_min, self.epsilon * self.epsilon_decay)
-
 
     def update_total_balance(self):
         while True:
@@ -72,14 +68,14 @@ class MarketMakingStrategy:
             time.sleep(60)
 
     def start_balance_updater(self):
-        balance_updater_thread = threading.Thread(target=self.update_total_balance)
+        balance_updater_thread = threading.Thread(
+            target=self.update_total_balance)
         balance_updater_thread.daemon = True
         balance_updater_thread.start()
 
-
     def get_phemex_balances(self):
         phemexBalance = sandbox.fetch_balance(params=parameter)
-        
+
         balances = []
         for symbol, value in phemexBalance['total'].items():
             if value > 0.0:
@@ -89,11 +85,11 @@ class MarketMakingStrategy:
                 datum['free'] = value
                 datum['locked'] = 0.0
                 datum['total'] = value
-                datum['price'] = bid_price 
-                datum['balance'] = round(bid_price * datum['total'],2)
+                datum['price'] = bid_price
+                datum['balance'] = round(bid_price * datum['total'], 2)
                 datum['platform'] = 'Phemex'
                 balances.append(datum)
-        
+
         df = pd.DataFrame(balances)
         return df
 
@@ -101,8 +97,8 @@ class MarketMakingStrategy:
         response = sandbox.fetch_balance(params=parameter)
         balances = response['info']['data']
         total_balance = 0
-        
-        tickers = sandbox.fetch_balance(params=parameter)   
+
+        tickers = sandbox.fetch_balance(params=parameter)
         available_symbols = set(tickers.keys())
 
         for balance in balances:
@@ -120,13 +116,14 @@ class MarketMakingStrategy:
                         asset_price = tickers[ticker]['last']
                         total_balance += total_asset_balance * asset_price
                 except ccxt.BaseError as e:
-                    print(f"Error fetching ticker for {ticker}: {e}")   
+                    print(f"Error fetching ticker for {ticker}: {e}")
         return total_balance
 
     def get_state(self, data):
         order_book, ohlcv = data
         bids, asks = order_book['bids'], order_book['asks']
-        state = np.concatenate((np.array(bids[:6]).flatten(), np.array(asks[:6]).flatten(), ohlcv))
+        state = np.concatenate(
+            (np.array(bids[:6]).flatten(), np.array(asks[:6]).flatten(), ohlcv))
         return state
 
     def choose_action(self, state):
@@ -136,19 +133,28 @@ class MarketMakingStrategy:
             q_values = self.model(state[np.newaxis])
             return np.argmax(q_values.numpy())
 
-    def update_q_network(self, state, action, reward, next_state):
-        next_q_values = self.model(next_state[np.newaxis]).numpy()
-        target = reward + self.gamma * np.max(next_q_values)
-        target_q_values = self.model(state[np.newaxis]).numpy()
-        target_q_values[0, action] = target
-        
-        self.model.fit(state[np.newaxis], target_q_values, epochs=1, verbose=0)
+    def update_q_network(self, states, actions, rewards, next_states):
+        next_q_values = self.model(next_states).numpy()
+        max_next_q_values = np.max(next_q_values, axis=1)
 
-    def get_balance(self, currency):  
-        balances = sandbox.fetch_balance()  
+        target_q_values = rewards + (self.gamma * max_next_q_values)
+
+        masks = tf.one_hot(actions, self.num_actions)
+
+        with tf.GradientTape() as tape:
+            all_q_values = self.model(states)
+            q_action = tf.reduce_sum(all_q_values * masks, axis=1)
+            loss = tf.reduce_mean(tf.square(target_q_values - q_action))
+
+        grads = tape.gradient(loss, self.model.trainable_variables)
+        self.model.optimizer.apply_gradients(
+            zip(grads, self.model.trainable_variables))
+
+    def get_balance(self, currency):
+        balances = sandbox.fetch_balance()
         for balance in balances['info']['balances']:
             if balance['asset'] == currency:
-                return float(balance['free'])  
+                return float(balance['free'])
         return 0
 
     def execute_action(self, action):
@@ -165,14 +171,15 @@ class MarketMakingStrategy:
         if action == 0:  # Buy
             usdt_balance = self.get_phemex_balances().total.sum()
             price = asks[0][0] * (1 - transaction_fee)
-            if price:  
+            if price:
                 amount = max(max_risk / price, min_trade_amount)
             else:
                 amount = 1
             print(price)
             if usdt_balance >= min_notional:
                 amount = max(max_risk / price, min_trade_amount)
-                amount = max(amount, max(min_notional * buffer / price, min_usd_amount * buffer / price))
+                amount = max(amount, max(min_notional * buffer /
+                             price, min_usd_amount * buffer / price))
                 amount = round(amount, 5)  # Round amount after updating
 
                 print("Price:", price)
@@ -181,7 +188,8 @@ class MarketMakingStrategy:
                 print("Minimum notional:", min_notional)
 
                 try:
-                    order = sandbox.create_limit_buy_order(symbol, amount, price, params=parameter)
+                    order = sandbox.create_limit_buy_order(
+                        symbol, amount, price, params=parameter)
                     self.placed_orders.append((time.time(), order))
                 except Exception as e:
                     print("Error creating buy order:", e)
@@ -195,7 +203,8 @@ class MarketMakingStrategy:
                 else:
                     amount = 1
                 amount = max(max_risk / price, min_trade_amount)
-                amount = max(amount, max(min_notional * buffer / price, min_usd_amount * buffer / price))
+                amount = max(amount, max(min_notional * buffer /
+                             price, min_usd_amount * buffer / price))
                 amount = round(amount, 5)  # Round amount after updating
 
                 print("Price:", price)
@@ -204,14 +213,17 @@ class MarketMakingStrategy:
                 print("Minimum notional:", min_notional)
 
                 try:
-                    order = sandbox.create_limit_sell_order(symbol, amount, price, params=parameter)
+                    order = sandbox.create_limit_sell_order(
+                        symbol, amount, price, params=parameter)
                     print(order)
+                    time.sleep(3)
                     self.placed_orders.append((time.time(), order))
                 except Exception as e:
                     print("Error creating sell order:", e)
 
         else:  # Hold
             pass
+
 
     def cancel_old_orders(self, max_age_seconds=180):
         current_time = time.time()
@@ -232,11 +244,14 @@ class MarketMakingStrategy:
         for index in sorted(orders_to_remove, reverse=True):
             del self.placed_orders[index]
 
+        for index in sorted(orders_to_remove, reverse=True):
+            del self.placed_orders[index]
+
     def update_order_statuses(self):
         updated_orders = []
         for _, order in self.placed_orders:
             try:
-                order_info = sandbox.fetch_order(order['id'], symbol)
+                order_info = sandbox.fetch_open_orders(order['id'], symbol)
                 updated_orders.append((_, order_info))
             except Exception as e:
                 print(f"Error fetching order {order['id']} status:", e)
@@ -244,61 +259,72 @@ class MarketMakingStrategy:
 
     def get_reward(self, action):
         starting_balance = self.get_phemex_balances().balance.sum()
+
         self.execute_action(action)
-        #time.sleep(5)
+
+        # Wait for order to execute
+        time.sleep(5)
+
         new_balance = self.total_balance
 
         reward = new_balance - starting_balance
 
         return reward
 
-    def update_order_statuses_and_remove_filled(self):
-        orders_to_remove = []
-
-        print(f"Updating order statuses for {len(self.placed_orders)} orders")
-
-        for i, (_, order) in enumerate(self.placed_orders):
-            try:
-                sandbox.cancel_order(order['id'], symbol)
-                orders_to_remove.append(i)
-            except ccxt.NetworkError as e:
-                print(f"Error updating order status: {e}")
-
-        print(f"Removing {len(orders_to_remove)} orders")
-
-        for index in sorted(orders_to_remove, reverse=True):
-            try:
-                del self.placed_orders[index]
-            except IndexError:
-                print(f"Error removing order from tracking")
-
-        print(f"{len(self.placed_orders)} orders left after update")
-
     def run(self):
+
         self.starting_balance = self.get_total_balance()
         self.start_balance_updater()
-        while True:
-            data = (sandbox.fetch_order_book(symbol), sandbox.fetch_ohlcv(symbol, timeframe)[-1])
-            print("data")
-            state = self.get_state(data)
-            print("state")
-            action = self.choose_action(state)
-            print("action")
-            self.update_order_statuses()
-            reward = self.get_reward(action)
-            self.update_order_statuses_and_remove_filled()
-            print("reward")
-            next_data = (sandbox.fetch_order_book(symbol), sandbox.fetch_ohlcv(symbol, timeframe)[-1])
-            print("next_data")
-            next_state = self.get_state(next_data)
-            print("next_state")
 
-            self.update_q_network(state, action, reward, next_state)
-            self.update_epsilon() 
-            print("epsilon: ", self.epsilon)
-            # self.cancel_old_orders()
+        states = []
+        actions = []
+        rewards = []
+        next_states = []
+
+        while True:
+
+            # Get current state
+            data = (sandbox.fetch_order_book(symbol),
+                    sandbox.fetch_ohlcv(symbol, timeframe)[-1])
+            state = self.get_state(data)
+            states.append(state)
+
+            # Choose action
+            action = self.choose_action(state)
+            actions.append(action)
+
+            # Execute action and get reward
+            reward = self.get_reward(action)
+            rewards.append(reward)
+
+            # Get next state
+            next_data = (sandbox.fetch_order_book(symbol),
+                            sandbox.fetch_ohlcv(symbol, timeframe)[-1])
+            next_state = self.get_state(next_data)
+            next_states.append(next_state)
+
+            # Update model
+            if len(states) % 10 == 0:
+                self.update_q_network(np.array(states), np.array(
+                actions), np.array(rewards), np.array(next_states))
+                states.clear()
+                actions.clear()
+                rewards.clear()
+                next_states.clear()
+
+            # Update order statuses
+            self.update_order_statuses()
+
+            # Cancel old orders
+            self.cancel_old_orders()
+
+            # Update epsilon
+            self.update_epsilon()
 
             time.sleep(5)
+
+# Model definition
+
 
 model = tf.keras.models.Sequential([
     tf.keras.layers.Dense(64, activation='relu', input_shape=(30,)),
