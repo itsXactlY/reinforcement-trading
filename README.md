@@ -7,8 +7,8 @@ This trading bot is designed to perform market making strategies on the Binance 
 - Market making strategy based on reinforcement learning
 - Q deep neural network for decision making
 - Order management with risk control
-- Fetches live data using Binance WebSocket API
-- Ensures minimum notional value and complies with Binance trading rules
+- Fetches live data using Phemex API
+- Ensures minimum notional value and complies with Phemex trading rules [WIP]
 
 ## Requirements
 
@@ -22,7 +22,7 @@ This trading bot is designed to perform market making strategies on the Binance 
 1. Clone this repository:
 
 ```bash
-git clone https://github.com/eomii/reinforcement-trading.git
+git clone https://github.com/itsXactlY/reinforcement-trading.git
 ```
 
 2. Install the required libraries:
