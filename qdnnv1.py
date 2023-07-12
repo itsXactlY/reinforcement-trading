@@ -10,7 +10,8 @@ api_key = ''
 secret_key = ''
 
 sandbox = ccxt.phemex({
-    'enableRateLimit': True,
+    'enableRateLimit': False,
+    "rateLimit": 1500,
     'timeout': 30000,
     'apiKey': api_key,
     'secret': secret_key,
@@ -21,9 +22,10 @@ sandbox = ccxt.phemex({
 sandbox.set_sandbox_mode(True)
 sandbox.verbose = False  # uncomment for debugging purposes if necessary
 
+phemex = ccxt.phemex()
+
 symbol = 'BTCUSD'
-full_symbol = 'BTC/USD:BTC'
-collateral_symbol = "BTC"
+coin_symbol = "BTC"
 timeframe = '1m'
 transaction_fee = 0.001
 max_risk = 0.05
@@ -41,7 +43,6 @@ def getprice(curr: str) -> float:
 
 
 class MarketMakingStrategy:
-
     def __init__(self, num_states, num_actions, alpha, gamma, epsilon, model):
         self.sandbox = sandbox
         self.starting_balance = self.get_total_balance(self.sandbox)
@@ -63,7 +64,7 @@ class MarketMakingStrategy:
     def update_total_balance(self):
         while True:
             self.total_balance = self.get_phemex_balances().balance.sum()
-            print("Total balance is: ", self.total_balance)
+            print(f"Total balance is: {self.total_balance}")
             time.sleep(60)
 
     def start_balance_updater(self):
@@ -78,7 +79,7 @@ class MarketMakingStrategy:
         balances = []
         for symbol, value in phemexBalance['total'].items():
             if value > 0.0:
-                bid_price = getprice(collateral_symbol)
+                bid_price = getprice(coin_symbol)
                 datum = {}
                 datum['asset'] = symbol
                 datum['free'] = value
@@ -92,7 +93,7 @@ class MarketMakingStrategy:
         df = pd.DataFrame(balances)
         return df
 
-    def get_total_balance(self, base_currency=collateral_symbol):
+    def get_total_balance(self, base_currency=coin_symbol):
         response = sandbox.fetch_balance(params=parameter)
         balances = response['info']['data']
         total_balance = 0
@@ -161,10 +162,13 @@ class MarketMakingStrategy:
         bids, asks = order_book['bids'], order_book['asks']
 
         sandbox.load_markets()
-        min_trade_amount = 1
+        ''' 
+        <--- WIP part starts here --->
+        '''
+        min_trade_amount = 100
 
         min_notional = 1
-        min_usd_amount = 6
+        min_usd_amount = 1
         buffer = 1.05  # 1% buffer
 
         if action == 0:  # Buy
@@ -173,7 +177,7 @@ class MarketMakingStrategy:
             if price:
                 amount = max(max_risk / price, min_trade_amount)
             else:
-                amount = 1
+                amount = 1111
             print(price)
             if usdt_balance >= min_notional:
                 amount = max(max_risk / price, min_trade_amount)
@@ -200,12 +204,14 @@ class MarketMakingStrategy:
                 if price:
                     amount = max(max_risk / price, min_trade_amount)
                 else:
-                    amount = 1
+                    amount = 1111
                 amount = max(max_risk / price, min_trade_amount)
                 amount = max(amount, max(min_notional * buffer /
                              price, min_usd_amount * buffer / price))
                 amount = round(amount, 5)  # Round amount after updating
-
+                '''
+                <--- WIP part ends here --->
+                '''
                 print("Price:", price)
                 print("Amount:", amount)
                 print("Notional:", price * amount)
@@ -214,8 +220,8 @@ class MarketMakingStrategy:
                 try:
                     order = sandbox.create_limit_sell_order(
                         symbol, amount, price, params=parameter)
-                    print(order)
-                    time.sleep(3)
+                    # print(order)
+                    # time.sleep(.250)
                     self.placed_orders.append((time.time(), order))
                 except Exception as e:
                     print("Error creating sell order:", e)
@@ -223,7 +229,8 @@ class MarketMakingStrategy:
         else:  # Hold
             pass
 
-    def cancel_old_orders(self, max_age_seconds=180):
+    def cancel_old_orders(self, max_age_seconds=120): # from 180
+        time.sleep(1)
         current_time = time.time()
         orders_to_remove = []
 
@@ -244,6 +251,7 @@ class MarketMakingStrategy:
 
     def update_order_statuses(self):
         updated_orders = []
+        time.sleep(1)
         for order_time, order in self.placed_orders:
             try:
                 order_info = self.sandbox.fetch_order(order['id'], order['symbol'], params=parameter)
@@ -292,27 +300,30 @@ class MarketMakingStrategy:
         next_states = []
 
         while True:
-
             # Get current state
             data = (sandbox.fetch_order_book(symbol),
-                    sandbox.fetch_ohlcv(symbol, timeframe)[-1])
+                    phemex.fetch_ohlcv(symbol, timeframe)[-1])
             state = self.get_state(data)
             states.append(state)
-
+            time.sleep(1)
+            
             # Choose action
             action = self.choose_action(state)
             actions.append(action)
-
+            time.sleep(1)
+            
             # Execute action and get reward
             reward = self.get_reward(action)
             rewards.append(reward)
-
+            time.sleep(1)
+            
             # Get next state
             next_data = (sandbox.fetch_order_book(symbol),
-                            sandbox.fetch_ohlcv(symbol, timeframe)[-1])
+                            phemex.fetch_ohlcv(symbol, timeframe)[-1])
             next_state = self.get_state(next_data)
             next_states.append(next_state)
-
+            time.sleep(1)
+            
             # Update model
             if len(states) % 10 == 0:
                 self.update_q_network(np.array(states), np.array(
@@ -324,14 +335,16 @@ class MarketMakingStrategy:
 
             # Update order statuses
             self.update_order_statuses()
-
+            time.sleep(1)
+            
             # Cancel old orders
             self.cancel_old_orders()
-
+            time.sleep(1)
+            
             # Update epsilon
             self.update_epsilon()
 
-            time.sleep(5)
+            time.sleep(4)
 
 # Model definition
 
