@@ -32,11 +32,11 @@ max_risk = 0.05
 parameter = {'type': 'swap', 'code': 'BTC'}
 
 
-def getprice(exchange, curr: str) -> float:
+def getprice(curr: str) -> float:
     if curr == 'USDT':
         return 1.0
     else:
-        tick = exchange.fetchTicker(curr+'/USDT')
+        tick = sandbox.fetch_ticker(curr+'USD')
         mid_point = tick['bid']
         return mid_point
 
@@ -79,7 +79,7 @@ class MarketMakingStrategy:
         balances = []
         for symbol, value in phemexBalance['total'].items():
             if value > 0.0:
-                bid_price = getprice(sandbox, symbol)
+                bid_price = getprice(collateral_symbol)
                 datum = {}
                 datum['asset'] = symbol
                 datum['free'] = value
@@ -224,7 +224,6 @@ class MarketMakingStrategy:
         else:  # Hold
             pass
 
-
     def cancel_old_orders(self, max_age_seconds=180):
         current_time = time.time()
         orders_to_remove = []
@@ -232,7 +231,7 @@ class MarketMakingStrategy:
         for i, (order_time, order) in enumerate(self.placed_orders):
             if current_time - order_time > max_age_seconds:
                 try:
-                    sandbox.cancel_order(order['id'], symbol)
+                    self.sandbox.cancel_order(order['id'], order['symbol'], params=parameter)
                     print(f"Order {order['id']} canceled.")
                     orders_to_remove.append(i)
                 except ccxt.OrderNotFound as e:
@@ -244,19 +243,31 @@ class MarketMakingStrategy:
         for index in sorted(orders_to_remove, reverse=True):
             del self.placed_orders[index]
 
-        for index in sorted(orders_to_remove, reverse=True):
-            del self.placed_orders[index]
-
     def update_order_statuses(self):
         updated_orders = []
-        for _, order in self.placed_orders:
+        for order_time, order in self.placed_orders:
             try:
-                order_info = sandbox.fetch_open_orders(order['id'], symbol)
-                updated_orders.append((_, order_info))
+                order_info = self.sandbox.fetch_order(order['id'], order['symbol'], params=parameter)
+                if order_info['status'] == 'closed':
+                    # Handle closed orders
+                    print(f"Order {order_info['id']} is closed.")
+                else:
+                    updated_orders.append((order_time, order_info))
+            except ccxt.OrderNotFound as e:
+                try:
+                    open_orders = self.sandbox.fetch_open_orders(order['symbol'], params=parameter)
+                    order_info = next(filter(lambda x: x['id'] == order['id'], open_orders), None)
+                    if order_info is not None:
+                        updated_orders.append((order_time, order_info))
+                    else:
+                        print(f"Order {order['id']} not found or already canceled/filled.")
+                except Exception as e:
+                    print(f"Error fetching order status for order {order['id']}: {e}")
             except Exception as e:
-                print(f"Error fetching order {order['id']} status:", e)
+                print(f"Error fetching order status for order {order['id']}: {e}")
         self.placed_orders = updated_orders
 
+    
     def get_reward(self, action):
         starting_balance = self.get_phemex_balances().balance.sum()
 
