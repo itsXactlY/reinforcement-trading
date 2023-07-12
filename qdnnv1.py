@@ -67,9 +67,9 @@ class MarketMakingStrategy:
 
     def update_total_balance(self):
         while True:
-            self.total_balance = self.get_phemex_balances().balance.sum()#self.get_total_balance()
+            self.total_balance = self.get_phemex_balances().balance.sum()
             print("Total balance is: ", self.total_balance)
-            time.sleep(10)
+            time.sleep(60)
 
     def start_balance_updater(self):
         balance_updater_thread = threading.Thread(target=self.update_total_balance)
@@ -183,7 +183,6 @@ class MarketMakingStrategy:
                 try:
                     order = sandbox.create_limit_buy_order(symbol, amount, price, params=parameter)
                     self.placed_orders.append((time.time(), order))
-                    print(order['id'])
                 except Exception as e:
                     print("Error creating buy order:", e)
 
@@ -191,7 +190,6 @@ class MarketMakingStrategy:
             btc_balance = self.get_phemex_balances()['total'].sum()
             if btc_balance * bids[0][0] >= min_notional:
                 price = bids[0][0] * (1 + transaction_fee)
-                print(price)
                 if price:
                     amount = max(max_risk / price, min_trade_amount)
                 else:
@@ -214,39 +212,6 @@ class MarketMakingStrategy:
 
         else:  # Hold
             pass
-        
-    def cancelorder(self, order):
-        # symbol = order['symbol']
-        
-        print(f"Attempting to cancel order {order['id']}")
-
-        # Fetch open orders to get latest data
-        open_orders = sandbox.fetch_open_orders(symbol, params=parameter)
-
-        # Try to cancel order
-        try:
-            sandbox.cancel_order(order['id'], symbol)
-            # sandbox.cancel_all_orders(symbol)
-        except ccxt.OrderNotFound:
-            print(f"Order {order['id']} not found when trying to cancel")
-        except ccxt.NetworkError as e:
-            print(f"Error canceling order due to network: {e}")
-        except ccxt.ExchangeError as e:
-            print(f"Error canceling order: {e}")
-
-        print(f"Order {order['id']} canceled")
-
-        # Update internal order tracking
-        for open_order in open_orders:
-            if open_order['id'] == order['id']:
-                # Order still exists, cancel failed
-                print(f"Order {order['id']} failed to cancel, still open")
-            return 
-        print(f"Order {order['id']} removed from tracking")
-
-        # Add short delay to avoid race conditions
-        time.sleep(1)
-
 
     def cancel_old_orders(self, max_age_seconds=180):
         current_time = time.time()
@@ -280,7 +245,7 @@ class MarketMakingStrategy:
     def get_reward(self, action):
         starting_balance = self.get_phemex_balances().balance.sum()
         self.execute_action(action)
-        time.sleep(5)
+        #time.sleep(5)
         new_balance = self.total_balance
 
         reward = new_balance - starting_balance
@@ -293,7 +258,6 @@ class MarketMakingStrategy:
         print(f"Updating order statuses for {len(self.placed_orders)} orders")
 
         for i, (_, order) in enumerate(self.placed_orders):
-            print(self.placed_orders)
             try:
                 sandbox.cancel_order(order['id'], symbol)
                 orders_to_remove.append(i)
@@ -320,7 +284,7 @@ class MarketMakingStrategy:
             print("state")
             action = self.choose_action(state)
             print("action")
-            # self.update_order_statuses()
+            self.update_order_statuses()
             reward = self.get_reward(action)
             self.update_order_statuses_and_remove_filled()
             print("reward")
@@ -332,7 +296,7 @@ class MarketMakingStrategy:
             self.update_q_network(state, action, reward, next_state)
             self.update_epsilon() 
             print("epsilon: ", self.epsilon)
-            self.cancel_old_orders()
+            # self.cancel_old_orders()
 
             time.sleep(5)
 
