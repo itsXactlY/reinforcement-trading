@@ -1,6 +1,6 @@
 # Market Making Trading Bot
 
-This trading bot is designed to perform market making strategies on the Binance exchange for the SOL/USDT trading pair. It uses reinforcement learning with a Q deep neural network to make trading decisions. The bot interacts with the Binance API using the CCXT library, and it operates on a 5-second timeframe.
+This trading bot is designed to perform market making strategies on the Phemex exchange. It uses reinforcement learning with a Q deep neural network to make trading decisions. The bot interacts with the CCXT library on Exchanges, and it operates on a 5-second timeframe.
 
 ## Features
 
@@ -32,7 +32,7 @@ pip install -r requirements.txt
 ```
 
 
-3. Set up your Binance API key and secret in the `qdnnv1.py` file.
+3. Set up your Phemex API key and secret in the `qdnnv1.py` file.
 
 ```python
 API_KEY = 'your-api-key'
